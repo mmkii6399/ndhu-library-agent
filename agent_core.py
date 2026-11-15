@@ -25,6 +25,7 @@ MAX_TOOL_TURNS = 3
 MODEL_CANDIDATES = [
     "gemini-3.5-flash",
     "gemini-3.8-flash",
+    "gemini-flash-latest",
 ]
 
 
@@ -173,7 +174,7 @@ class LibraryAgent:
 
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=1, max=3))
     def _call_gemini(self, contents: List[Any], config: types.GenerateContentConfig):
-        """依序嘗試候選模型，遇超時、503/504 伺服器擁擠或 429 限流時自動無縫切換"""
+        """依序嘗試候選模型，遇額度上限、超時或伺服器擁擠時自動無縫切換（不重複浪費配額）"""
         last_err = None
         for model_name in MODEL_CANDIDATES:
             try:
@@ -186,6 +187,7 @@ class LibraryAgent:
                 last_err = e
                 err_msg = str(e)
                 print(f"[FALLBACK] 模型 {model_name} 略過 ({type(e).__name__}: {err_msg[:60]})，切換下一個備援模型...", flush=True)
+                time.sleep(1)
                 continue
         raise last_err
 
@@ -209,10 +211,11 @@ class LibraryAgent:
         self,
         user_query: str,
         image: Optional[Image.Image] = None,
+        pdf_bytes: Optional[bytes] = None,
         status_callback=None
     ) -> Dict[str, Any]:
         """
-        執行 Agent 主迴圈，回傳最終回答與完整工具調用紀錄（對接成員 C 的 Streamlit 介面）。
+        執行 Agent 主迴圈，支援純文字、圖片截圖與 PDF 課程大綱檔案輸入。
         """
         def log_step(msg: str):
             print(f"[AGENT STEP] {msg}", flush=True)
@@ -227,7 +230,6 @@ class LibraryAgent:
                 year_min=year_min,
                 use_mock=self.use_mock_opac
             )
-            # 單次最多取前 3 筆，減少後續 Token 量與推論時間
             return books[:3]
 
         def tool_fetch_summary(isbn: str = "", title: str = "") -> Dict[str, str]:
@@ -236,16 +238,19 @@ class LibraryAgent:
 
         config = self._build_config(tools=[tool_search_opac, tool_fetch_summary])
 
-        initial_parts: List[Any] = [user_query]
+        # 組合多模態輸入 Parts（支援文字 + 圖片 或 PDF 課程大綱）
+        user_parts: List[Any] = [types.Part.from_text(text=user_query)]
         if image is not None:
-            initial_parts.append(image)
+            user_parts.append(image)
             log_step("📸 偵測到上傳圖片，啟動多模態課程大綱／書單辨識...")
+        if pdf_bytes is not None:
+            user_parts.append(
+                types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
+            )
+            log_step("📄 偵測到上傳 PDF 課程大綱，啟動文件解析與參考書目萃取...")
 
         conversation: List[types.Content] = [
-            types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=p) if isinstance(p, str) else p for p in initial_parts]
-            )
+            types.Content(role="user", parts=user_parts)
         ]
 
         trace_logs: List[Dict[str, Any]] = []
