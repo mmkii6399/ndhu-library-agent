@@ -23,9 +23,9 @@ MAX_TOOL_TURNS = 3
 
 # 【Responsible AI - 系統高可用性】優先使用低延遲高速模型，遇擁擠或超時自動無縫切換
 MODEL_CANDIDATES = [
+    "gemini-3.5-flash-lite",
     "gemini-3.5-flash",
     "gemini-3.8-flash",
-    "gemini-flash-latest",
 ]
 
 
@@ -172,7 +172,6 @@ class LibraryAgent:
         )
         self.use_mock_opac = use_mock_opac
 
-    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=1, max=3))
     def _call_gemini(self, contents: List[Any], config: types.GenerateContentConfig):
         """依序嘗試候選模型，遇額度上限、超時或伺服器擁擠時自動無縫切換（不重複浪費配額）"""
         last_err = None
@@ -192,7 +191,7 @@ class LibraryAgent:
         raise last_err
 
     def _build_config(self, tools=None) -> types.GenerateContentConfig:
-      """建立極速低延遲推論設定（關閉冗長思考鏈 + 低溫度防幻覺）"""
+      """建立極速低延遲推論設定（相容所有 Flash / Flash-Lite 模型）"""
       kwargs: Dict[str, Any] = {
           "system_instruction": SYSTEM_INSTRUCTION,
           "temperature": 0.1,
@@ -200,11 +199,6 @@ class LibraryAgent:
       if tools:
           kwargs["tools"] = tools
           kwargs["automatic_function_calling"] = types.AutomaticFunctionCallingConfig(disable=True)
-      # 嘗試將思考預算壓至最低，加快回應速度
-      try:
-          kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
-      except Exception:
-          pass
       return types.GenerateContentConfig(**kwargs)
 
     def run(
